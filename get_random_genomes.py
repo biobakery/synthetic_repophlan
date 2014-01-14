@@ -12,20 +12,28 @@ import glob
 import random
 import os
 import shutil
+import string
 import subprocess
-import tarfile
 
-c_sTaxonTableFileName = "TaxonTable.tsv"
+c_sTaxonTableFileName = "TaxonTable"
 c_sCommunityPercentFileName = "Input"
-c_sGoldStandardFileName = "GoldStandard.tsv"
+c_sFileExtension  = "*.fna"
+c_sGenusKey = "g__"
+c_sGoldStandardFileName = "GoldStandard"
+c_sKingdomKey = "k__"
+c_sLognormalMu = 1
+c_sLognormalSigma = 2.7
+c_sSpeciesKey = "s__"
+c_sStrainKey = "t__"
 
 argp = argparse.ArgumentParser( prog = "get_random_genomes.py", description = """Given a supset compressed tar of reference genomes, select random genomes and place in an output directory.""" )
 argp.add_argument("-n", "--bugCount", dest = "iBugCount", default = 100, type = int, action = "store", help = "The number of genomes to select.")
 argp.add_argument("-s", "--sampleCount", dest = "iSampleCount", default = 10, type = int, action = "store", help = "The number of samples which will be generated." )
+argp.add_argument("-l", "--lognormal", dest = "fLognormalDistribution", default = False, action = "store_true", help = "Indicates a lognormal distribution is desired." )
+argp.add_argument("--t", "--taxonomy", dest = "sTaxonomyFile", default = "taxonomy_reduced.txt", action = "store", help = "The file from which taxonomy will be retrieved.")
 argp.add_argument(dest = "sOutputDirectory", default = "Outputs", action = "store", help = "Output directory to place genomes.)")
 argp.add_argument(dest = "sInputDirectories", nargs = "*", action = "store", help = "One or many input compressed directories.")
 args = argp.parse_args()
-print args
 
 # Holds the file and the archives that they come from
 # {"genome1":"archive1", "genome2:archive2", "genome3:archive1" }
@@ -53,81 +61,96 @@ lsPercentageFile = []
 # Holds the gold standard truth to the selected community abundances
 lsGoldStandard = []
 
-# The percentage for an even community
-iCommunity = 100.0 / args.iSampleCount
+# Holds the taxonomy files
+dictTaxonomy = {}
 
-# For each tar file 
+# The percentage for an even community
+iCommunity = 100.0 / args.iBugCount
+
+# Get all files and store indicating their archive
 for sGenomeArchive in args.sInputDirectories:
-  print "sGenomeArchive"
-  print sGenomeArchive
-  tarProcessor = tarfile.open( sGenomeArchive )
-  lsGenomes = tarProcessor.getnames()
+  lsGenomes = [ sFile for sFile in glob.glob( os.path.join( sGenomeArchive, c_sFileExtension ) ) ]
   dictGenomes.update( dict( zip( lsGenomes, [ sGenomeArchive ] * len( lsGenomes ) ) ) )
-  print len( dictGenomes )
-  tarProcessor.close()
 
 # Select files
 lsSelectedGenomes = random.sample( dictGenomes.keys(), args.iBugCount )
-print lsSelectedGenomes
+
 # Reduce dict to just the selected files
 dictGenomes = dict( ( sSelectedGenomes, dictGenomes[ sSelectedGenomes ] ) for sSelectedGenomes in lsSelectedGenomes )
 
-# Extract the selected files
-for sArchive in set( dictGenomes.itervalues() ):
-  print sArchive
-  lsSelectedGenomes = [ key for key, value in dictGenomes.iteritems() if value == sArchive ]
-  print len( lsSelectedGenomes )
-  tarProcessor = tarfile.open( sArchive )
-  for sSelectedGenome in lsSelectedGenomes:
-    tarProcessor.extract( sSelectedGenome, args.sOutputDirectory )
-  tarProcessor.close()
-
-# Flatten the file structure
-ltplTerminalFiles = [ sFile for sFile in os.walk( args.sOutputDirectory ) if sFile[-1] ]
-print ltplTerminalFiles
-for tplTerminalFile in ltplTerminalFiles:
-  for sFile in tplTerminalFile[-1]:
-    sTerminalFile = os.path.join( tplTerminalFile[ 0 ], sFile)
-    lsGenomeFilesSelected.append( sFile )
-    shutil.move( sTerminalFile, args.sOutputDirectory )
-  shutil.rmtree( tplTerminalFile[ 0 ] )
-
+# Copy files
 # Remove spaces from ids
-for sGenomeFastaFile in lsGenomeFilesSelected:
-  subprocess.call( ["sed", "-i", 's/ /_/g', os.path.join( args.sOutputDirectory, sGenomeFastaFile )] )
+for sGenomeFastaFile in lsSelectedGenomes:
+  sOutFileLocation = os.path.join( args.sOutputDirectory, os.path.basename( sGenomeFastaFile ) )
+  shutil.copyfile( sGenomeFastaFile, sOutFileLocation )
+  subprocess.call( ["sed", "-i", "s; ;_;g", sOutFileLocation] )
+
+# Read in taxoomy file
+# Expected a file formated as follows
+# bug_name\tinteger\ttaxonomy|pipe|delimited
+with open( args.sTaxonomyFile, 'rU' ) as handleTaxonomy:
+  csvr = csv.reader( handleTaxonomy, delimiter = "\t" )
+  for lsTaxonomy in csvr:
+    if len( dictTaxonomy.get( lsTaxonomy[ 0 ], "" ) ) < len( lsTaxonomy[ 2 ] ):
+      dictTaxonomy[ lsTaxonomy[ 0 ] ] = lsTaxonomy[ 2 ]
 
 # Make file indicating an even percent of sampling to occur per genome
 # Normalized by genome length
 # Assumes one genome in each file
-print lsGenomeFilesSelected
-for sGenomeFastaFile in lsGenomeFilesSelected:
-  with open( os.path.join( args.sOutputDirectory, sGenomeFastaFile ), "rU" ) as handleFasta:
-    iReferenceLength = 0
-    sName = ""
-    for SeqCur in SeqIO.parse( handleFasta, "fasta" ):
-      iReferenceLength += len( SeqCur )
-      sName = SeqCur.id.split("|")[-1].strip("_")
-    sName = sName.split(",")[0]
-    print "NAME"
-    print sName
-    print iReferenceLength
-    # Update taxon table
-    lsTaxonTable.append( [ os.path.splitext( sGenomeFastaFile )[ 0 ],"","Finished",sName.split(",")[0],"","","","","","","","","genus","species","strain" ] )
-    print iReferenceLength
-    print iCommunity
-    print iCommunity / iReferenceLength
-    lsPercentageFile.append( [ sName.split(",")[0], iCommunity / iReferenceLength ]  )
-    lsGoldStandard.append( [ sName.split(",")[0], iCommunity ])
+for sGenomeFastaFile in lsSelectedGenomes:
+  with open( os.path.join( args.sOutputDirectory,  os.path.basename( sGenomeFastaFile ) ), "rU" ) as handleFasta:
 
+    # Genus, species, strain
+    sGenusCur = "genus"
+    sKingdomCur = "NA"
+    sSpeciesCur = "species"
+    sStrainCur = "strain"
+
+    # Get bug name from the sequence information
+    sDescription = SeqIO.parse( handleFasta, "fasta" ).next().description # Get description
+    sDescription = sDescription.split( "|" )[-1] # Look at description and not sequence info
+    sName = sDescription.split( "," )[0] # Remove genome completeness information
+    sName = sName[1:] # Remove first character which will be underscore (after above sed)
+    sGenomeState = sDescription.split( "," )[1] # Parse genome information starts with _complete_genome
+    sGenomeState = sGenomeState.split( "_" )[1]
+    sCleanedName  = string.replace( sName,"-","_" )  # The dashes are underscores in the taxonomy table so you have to search with a transformed name.
+    
+    # Potentially get genus, species, and strain
+    if sCleanedName in dictTaxonomy:
+      lsTaxonomy = dictTaxonomy[ sCleanedName ].split("|")
+      
+      for sTaxonomyItem in lsTaxonomy:
+        if c_sGenusKey == sTaxonomyItem[0: len( c_sGenusKey )]:
+          sGenusCur = sTaxonomyItem[len( c_sGenusKey ):]
+        elif c_sSpeciesKey == sTaxonomyItem[0: len( c_sSpeciesKey )]:
+          sSpeciesCur = sTaxonomyItem[len( c_sSpeciesKey ):]
+        elif c_sStrainKey == sTaxonomyItem[0: len( c_sStrainKey )]:
+          sStrainCur = sTaxonomyItem[len( c_sStrainKey ):]
+        elif c_sKingdomKey == sTaxonomyItem[0: len( c_sKingdomKey )]:
+          sKingdomCur =  sTaxonomyItem[len( c_sKingdomKey ):]
+    else:
+      print "Could not find: " + sCleanedName
+
+    # Update taxon table
+    lsTaxonTable.append( [ os.path.splitext( os.path.basename( sGenomeFastaFile ) )[ 0 ],sKingdomCur,sGenomeState,sName,"NA","NA","NA","NA","NA","NA","NA","NA",sGenusCur,sSpeciesCur,sStrainCur ] + ( [ "NA" ] * 132 ))
+    lsPercentageFile.append( " ".join([ sGenusCur, sSpeciesCur ]) )
+    lsGoldStandard.append( c_sGenusKey + sGenusCur )
+
+# Input File: Taxon File
 # Make Taxon Table file
 with open( os.path.join( args.sOutputDirectory, c_sTaxonTableFileName ), "w" ) as handleTaxonTable:
   csv.writer( handleTaxonTable, delimiter = "\t" ).writerows( lsTaxonTable )
 
+# Input file: Community Percents
 # Make community proportion file
-for iSample in xrange( args.iSampleCount ):
-  with open( os.path.join( args.sOutputDirectory, c_sCommunityPercentFileName + "_" + str( iSample ) ), "w" ) as handleCommunityPercent:
-    csv.writer( handleCommunityPercent, delimiter = "\t" ).writerows( lsPercentageFile )
-
-# Make gold standard file
-with open( os.path.join( args.sOutputDirectory, c_sGoldStandardFileName ), "w" ) as handleGoldStandard:
-  csv.writer( handleGoldStandard, delimiter = "\t" ). writerows( lsGoldStandard )
+for iSample in xrange( 1, args.iSampleCount + 1 ):
+  with open( os.path.join( args.sOutputDirectory, c_sCommunityPercentFileName + "_" + str( iSample ) + ".txt" ), "w" ) as handleCommunityPercent:
+    # Input file: Gold standard for later evaluation
+    # Make gold standard file
+    with open( os.path.join( args.sOutputDirectory, c_sGoldStandardFileName + "_" + str( iSample ) + ".txt" ), "w" ) as handleGoldStandard:
+      for iBugIndex, sBug in enumerate( lsPercentageFile ):
+        # If needing a lognormal distribution randomly draw a community proportion
+        if args.fLognormalDistribution:
+          iCommunity = random.lognormvariate( mu = c_sLognormalMu, sigma = c_sLognormalSigma )
+        csv.writer( handleCommunityPercent, delimiter = "\t" ).writerow( [ sBug, iCommunity ] )
+        csv.writer( handleGoldStandard, delimiter = "\t" ). writerow( [ lsGoldStandard[iBugIndex], iCommunity ] )
